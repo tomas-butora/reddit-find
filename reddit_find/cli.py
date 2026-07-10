@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 # Load SERPER_API_KEY from workspace .env if present (optional)
 load_dotenv(Path(__file__).parents[2] / ".env", override=False)
-load_dotenv(Path("C:/Users/mitch/Everything_CC/.env"), override=False)
+load_dotenv(override=False)
 
 from . import __version__
 from .discover import find_subreddits
