@@ -1,4 +1,8 @@
-"""Reddit JSON API fetching — posts and comments, no auth required."""
+"""Reddit API fetching — posts and comments via OAuth (oauth.reddit.com).
+
+Reddit blocks anonymous .json access (403), so every request carries a bearer
+token from auth.get_token(). See auth.py for credential setup.
+"""
 
 import re
 import time
@@ -7,10 +11,9 @@ from typing import Dict, List, Optional
 
 import requests
 
-HEADERS = {
-    "User-Agent": "reddit-find/1.0 GTM research tool (github.com/LeadGrowGTM/reddit-find)"
-}
-BASE_URL = "https://old.reddit.com"
+from .auth import USER_AGENT, RedditAuthError, RedditBlockedError, get_token
+
+BASE_URL = "https://oauth.reddit.com"
 
 
 def fetch_subreddit_posts(
@@ -24,7 +27,7 @@ def fetch_subreddit_posts(
 
     max_age_days: if set, filter out posts older than N days (uses created_utc).
     """
-    url = f"{BASE_URL}/r/{subreddit}/{sort}.json"
+    url = f"{BASE_URL}/r/{subreddit}/{sort}"
     params: Dict = {"limit": limit}
     if sort == "top":
         params["t"] = time_filter
@@ -66,7 +69,7 @@ def fetch_subreddit_posts(
 
 def fetch_post_comments(subreddit: str, post_id: str, limit: int = 25) -> List[Dict]:
     """Fetch top comments from a post."""
-    url = f"{BASE_URL}/r/{subreddit}/comments/{post_id}.json"
+    url = f"{BASE_URL}/r/{subreddit}/comments/{post_id}"
     time.sleep(2)
 
     raw = _get(url, {"limit": limit, "sort": "top"}, array_response=True)
@@ -104,10 +107,10 @@ def fetch_single_post(post_url_or_id: str, subreddit: Optional[str] = None) -> O
         return None
 
     if sub:
-        url = f"{BASE_URL}/r/{sub}/comments/{post_id}.json"
+        url = f"{BASE_URL}/r/{sub}/comments/{post_id}"
     else:
         # Try without subreddit path (Reddit redirects)
-        url = f"{BASE_URL}/comments/{post_id}.json"
+        url = f"{BASE_URL}/comments/{post_id}"
 
     time.sleep(1)
     raw = _get(url, {"limit": 50, "sort": "top"}, array_response=True)
@@ -182,7 +185,7 @@ def search_posts(
 
     if subreddits:
         for sub in subreddits:
-            url = f"{BASE_URL}/r/{sub}/search.json"
+            url = f"{BASE_URL}/r/{sub}/search"
             params = {
                 "q": query,
                 "restrict_sr": "on",
@@ -195,7 +198,7 @@ def search_posts(
                 continue
             all_posts.extend(_parse_search_results(data, cutoff_ts, min_score))
     else:
-        url = f"{BASE_URL}/search.json"
+        url = f"{BASE_URL}/search"
         params = {
             "q": query,
             "type": "link",
@@ -263,14 +266,42 @@ def _parse_post_ref(ref: str, subreddit: Optional[str] = None):
 
 
 def _get(url: str, params: Dict, array_response: bool = False, retry: bool = True):
+    """GET an oauth.reddit.com endpoint with a bearer token.
+
+    Raises RedditAuthError (missing/invalid creds) or RedditBlockedError (403)
+    so failures are loud, not silently swallowed into "no posts found".
+    Returns None only for genuine empty/network hiccups after retry.
+    """
+    token = get_token()  # raises RedditAuthError if unconfigured
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}
+    params = {**params, "raw_json": 1}
+
     try:
-        resp = requests.get(url, headers=HEADERS, params=params, timeout=15)
-        if resp.status_code == 429:
-            if retry:
-                time.sleep(15)
-                return _get(url, params, array_response, retry=False)
-            return None
-        resp.raise_for_status()
+        resp = requests.get(url, headers=headers, params=params, timeout=15)
+    except requests.RequestException as e:
+        if retry:
+            time.sleep(3)
+            return _get(url, params, array_response, retry=False)
+        raise RedditBlockedError(f"Network error reaching {url}: {e}")
+
+    if resp.status_code == 401 and retry:
+        # Token likely expired mid-run — force refresh once and retry.
+        get_token(force=True)
+        return _get(url, params, array_response, retry=False)
+    if resp.status_code == 429:
+        if retry:
+            time.sleep(15)
+            return _get(url, params, array_response, retry=False)
+        raise RedditBlockedError("Reddit rate limit hit (429) after retry — slow down.")
+    if resp.status_code == 403:
+        raise RedditBlockedError(
+            f"Reddit returned 403 for {url} even with a valid token — the app or IP may be "
+            "blocked, or the endpoint needs a user-context (password) grant."
+        )
+    if resp.status_code >= 400:
+        raise RedditBlockedError(f"Reddit HTTP {resp.status_code} for {url}: {resp.text[:150]}")
+
+    try:
         return resp.json()
-    except Exception:
+    except ValueError:
         return None

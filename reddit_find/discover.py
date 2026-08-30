@@ -5,13 +5,11 @@ import re
 import requests
 from typing import Dict, List, Optional
 
+from .auth import USER_AGENT, RedditAuthError, get_token
+
 
 SERPER_URL = "https://google.serper.dev/search"
-REDDIT_SEARCH_URL = "https://old.reddit.com/search.json"
-
-HEADERS = {
-    "User-Agent": "reddit-find/1.0 GTM research tool (github.com/LeadGrowGTM/reddit-find)"
-}
+REDDIT_SEARCH_URL = "https://oauth.reddit.com/subreddits/search"
 
 BLOCKED_SUBS = {
     "all", "popular", "new", "best", "rising", "controversial",
@@ -69,12 +67,16 @@ def find_subreddits(topic: str, serper_api_key: Optional[str] = None, num_result
 
 
 def _reddit_subreddit_search(topic: str, limit: int = 15) -> List[Dict]:
-    """Search Reddit's own subreddit search API. No API key required."""
+    """Search Reddit's subreddit search API via OAuth. Returns [] if unauthed."""
+    try:
+        token = get_token()
+    except RedditAuthError:
+        return []  # discover can still run serper-only
     try:
         resp = requests.get(
             REDDIT_SEARCH_URL,
-            headers=HEADERS,
-            params={"q": topic, "type": "sr", "limit": limit},
+            headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT},
+            params={"q": topic, "limit": limit, "raw_json": 1},
             timeout=15,
         )
         resp.raise_for_status()

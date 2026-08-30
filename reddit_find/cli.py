@@ -9,11 +9,14 @@ from typing import List, Optional
 import click
 from dotenv import load_dotenv
 
-# Load SERPER_API_KEY from workspace .env if present (optional)
-load_dotenv(Path(__file__).parents[2] / ".env", override=False)
+# Load credentials (REDDIT_CLIENT_ID/SECRET, SERPER_API_KEY) from .env.
+# Try the gtm-context-os repo root first, then any local .env / cwd.
+load_dotenv(Path(__file__).parents[4] / ".env", override=False)  # gtm-context-os/.env
+load_dotenv(Path(__file__).parents[2] / ".env", override=False)  # tools/.env (legacy)
 load_dotenv(override=False)
 
 from . import __version__
+from .auth import RedditAuthError, RedditBlockedError
 from .discover import find_subreddits
 from .fetch import fetch_post_comments, fetch_single_post, fetch_subreddit_posts, search_posts
 
@@ -382,4 +385,8 @@ def _build_post_markdown(post: dict) -> str:
 
 
 def main():
-    cli()
+    try:
+        cli()
+    except (RedditAuthError, RedditBlockedError) as e:
+        click.echo(f"\n⚠  {e}", err=True)
+        sys.exit(2)
