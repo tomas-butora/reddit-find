@@ -29,8 +29,20 @@ TWO LIMITATIONS, both measured 2026-09-06:
 
    The signal that IS reliable is the live comment count, which the comments endpoint
    serves current (a post storing num_comments=1 returned 65 real comments).
-   `enrich_engagement()` fetches that, and ranking uses it. Where a backfilled score
-   does exist it is kept in the output as a bonus, just never used as a gate.
+   `enrich_engagement()` fetches that, and ranking uses it by default.
+
+   min_score is still honoured when set above 1, as an OPT-IN PRECISION FILTER: a score
+   that IS present is trustworthy, so `--min-score 50` returns genuinely popular threads.
+   It just cannot see the rest. Measured over 600 r/sales posts across 90 days:
+
+       have a real score (>1)    96   (16%)
+       stuck at 1               504   (84%)
+       score >= 20               31
+       score >= 50               17
+       score >= 100              10
+
+   So use it when you want confirmed winners and can accept missing things; leave it off
+   (the default) when you want coverage and are ranking on comments instead.
 
 2. Server-side full-text search always times out ("Timeout. Maybe slow
 down a bit", HTTP 422), even over a one-week window. Their search index is too expensive
@@ -121,6 +133,7 @@ def fetch_subreddit_posts(
     limit: int = 25,
     time_filter: str = "month",
     max_age_days: Optional[int] = None,
+    min_score: int = 0,
 ) -> List[Dict]:
     """Posts from one subreddit, newest first, then re-sorted by score.
 
@@ -131,6 +144,8 @@ def fetch_subreddit_posts(
     # over-pull so ranking has something to choose from, since stored scores are useless
     rows = _pull_posts(subreddit, want=max(limit * 3, 60), cutoff_ts=_cutoff(max_age_days))
     posts = [_normalise_post(p, subreddit) for p in rows]
+    if min_score > 1:
+        posts = [p for p in posts if p["score"] >= min_score]
     posts = enrich_engagement(posts, max_posts=min(len(posts), 60))
     return sorted(posts, key=lambda x: (x["num_comments"], x["score"]), reverse=True)[:limit]
 
@@ -287,9 +302,12 @@ def search_posts(
             haystack = f"{p.get('title', '')} {p.get('selftext', '')}".lower()
             if not all(t in haystack for t in terms):
                 continue
-            # min_score is deliberately NOT applied: see limitation 1 at the top of
-            # this file. Every stored score is 1, so any threshold above 1 returns zero.
-            hits.append(_normalise_post(p, sub))
+            post = _normalise_post(p, sub)
+            # min_score is opt-in precision: it keeps only posts with a CONFIRMED score,
+            # which is ~16% of the pool. See limitation 1 at the top of this file.
+            if min_score > 1 and post["score"] < min_score:
+                continue
+            hits.append(post)
 
     if sort == "new":
         hits.sort(key=lambda x: x["created_utc"], reverse=True)
