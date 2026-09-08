@@ -67,7 +67,7 @@ def discover(topic: str, serper_key: Optional[str], top: int):
 @click.option("--serper-key", envvar="SERPER_API_KEY", default=None, help="SerperDev API key (optional, improves subreddit discovery)")
 @click.option("--subreddit", "-s", multiple=True, help="Target specific subreddits (skips discovery)")
 @click.option("--posts-per-sub", default=20, show_default=True, help="Posts to fetch per subreddit")
-@click.option("--min-score", default=5, show_default=True, help="Minimum post score to include")
+@click.option("--min-score", default=1, show_default=True, help="Minimum post score to include. Arctic Shift leaves 84% of posts at score 1, so raise this to 50 only when you want confirmed-popular threads.")
 @click.option("--top-threads", default=8, show_default=True, help="Top threads to fetch per subreddit")
 @click.option("--max-age-days", default=365, show_default=True, help="Filter posts older than N days (default: 365). Use 90 for 'recent', 7 for 'this week'.")
 @click.option("--titles-only", is_flag=True, default=False, help="Skip comments — return post titles, scores, dates, and URLs only. Fast scan to decide which posts to deep-dive.")
