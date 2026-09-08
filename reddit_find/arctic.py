@@ -58,16 +58,25 @@ Caveat worth knowing: Arctic Shift is a free community project with no SLA. If i
 away, the fallback is a paid backend (Apify trudax/reddit-scraper-lite, ~$3.40/1k results).
 """
 
+import random
 import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import requests
 
+from .errors import BackendUnavailableError, RedditBlockedError, RedditRateLimitError
+from .ratelimit import get_limiter
+
 BASE_URL = "https://arctic-shift.photon-reddit.com/api"
 TIMEOUT = 45
 PAGE_SIZE = 100          # max the API reliably returns per call
-POLITE_DELAY = 0.15      # seconds between paginated calls
+# Pacing now lives in ratelimit.RateLimiter, which every _get() call goes through.
+# POLITE_DELAY is kept only so old callers importing it do not break; the limiter
+# is the single place that decides spacing.
+POLITE_DELAY = 0.0
+MAX_RETRIES = 4          # attempts on a 429 before giving up
+BACKOFF_BASE = 1.5       # seconds; doubles each retry, plus jitter
 
 
 class ArcticShiftError(RuntimeError):
@@ -75,24 +84,67 @@ class ArcticShiftError(RuntimeError):
 
 
 def _get(path: str, params: Dict) -> List[Dict]:
-    """GET an Arctic Shift endpoint and return the `data` array."""
-    try:
-        resp = requests.get(f"{BASE_URL}/{path}", params=params, timeout=TIMEOUT)
-    except requests.exceptions.RequestException as exc:
-        raise ArcticShiftError(f"could not reach Arctic Shift: {exc}") from exc
+    """GET an Arctic Shift endpoint and return the `data` array.
 
-    if resp.status_code == 429:
-        raise ArcticShiftError("rate limited by Arctic Shift, wait and retry")
+    Every request is paced by the shared cross-run limiter, and a 429 is retried
+    with exponential backoff plus jitter rather than failing the run. Anything
+    that is still a failure after that is raised as a typed error, never as an
+    empty list — a broken mirror must not read as a quiet market.
+    """
+    limiter = get_limiter()
+    delay = BACKOFF_BASE
 
-    try:
-        payload = resp.json()
-    except ValueError:
-        raise ArcticShiftError(f"non-JSON response (HTTP {resp.status_code})")
+    for attempt in range(1, MAX_RETRIES + 1):
+        limiter.acquire()
+        try:
+            resp = requests.get(f"{BASE_URL}/{path}", params=params, timeout=TIMEOUT)
+        except requests.exceptions.RequestException as exc:
+            if attempt == MAX_RETRIES:
+                raise BackendUnavailableError(
+                    f"could not reach Arctic Shift after {MAX_RETRIES} attempts: {exc}"
+                ) from exc
+            time.sleep(delay + random.uniform(0, delay / 2))
+            delay *= 2
+            continue
 
-    if payload.get("error"):
-        raise ArcticShiftError(str(payload["error"]))
+        if resp.status_code == 429:
+            if attempt == MAX_RETRIES:
+                raise RedditRateLimitError(
+                    f"Arctic Shift is still rate limiting after {MAX_RETRIES} attempts. "
+                    "Wait a few minutes, or lower --max-per-minute."
+                )
+            time.sleep(delay + random.uniform(0, delay / 2))
+            delay *= 2
+            continue
 
-    return payload.get("data") or []
+        if resp.status_code == 403:
+            raise RedditBlockedError(
+                "Arctic Shift returned 403 (blocked). This is the backend refusing us, "
+                "not an empty result."
+            )
+
+        if resp.status_code >= 500:
+            if attempt == MAX_RETRIES:
+                raise BackendUnavailableError(
+                    f"Arctic Shift returned HTTP {resp.status_code} after {MAX_RETRIES} attempts."
+                )
+            time.sleep(delay + random.uniform(0, delay / 2))
+            delay *= 2
+            continue
+
+        try:
+            payload = resp.json()
+        except ValueError:
+            raise BackendUnavailableError(
+                f"Arctic Shift returned a non-JSON response (HTTP {resp.status_code})."
+            )
+
+        if payload.get("error"):
+            raise ArcticShiftError(str(payload["error"]))
+
+        return payload.get("data") or []
+
+    raise BackendUnavailableError("Arctic Shift request failed with no response.")
 
 
 def _normalise_post(p: Dict, fallback_sub: str = "") -> Dict:
@@ -193,7 +245,6 @@ def _pull_posts(
             break
 
         before = datetime.fromtimestamp(oldest, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-        time.sleep(POLITE_DELAY)
 
     return collected
 
@@ -216,7 +267,6 @@ def enrich_engagement(posts: List[Dict], max_posts: int = 40) -> List[Dict]:
         real = [c for c in rows if (c.get("body") or "").strip() not in ("", "[deleted]", "[removed]")]
         post["num_comments"] = len(real)
         post["engagement_checked"] = True
-        time.sleep(POLITE_DELAY)
     return posts
 
 

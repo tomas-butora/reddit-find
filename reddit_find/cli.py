@@ -16,20 +16,32 @@ load_dotenv(Path(__file__).parents[2] / ".env", override=False)  # tools/.env (l
 load_dotenv(override=False)
 
 from . import __version__
-from .auth import RedditAuthError, RedditBlockedError
+from .arctic import ArcticShiftError
+from .auth import RedditAuthError
+from .auth import RedditBlockedError as LegacyRedditBlockedError
+from .errors import BackendUnavailableError, RedditBlockedError, RedditRateLimitError
+from .ratelimit import current_limiter, init_limiter
 from .discover import find_subreddits
 from .fetch import fetch_post_comments, fetch_single_post, fetch_subreddit_posts, search_posts
 
 
 @click.group()
 @click.version_option(version=__version__)
-def cli():
+@click.option(
+    "--max-per-minute",
+    type=int,
+    default=lambda: int(os.environ.get("REDDIT_FIND_MAX_PER_MINUTE", 300)),
+    show_default="300 (env: REDDIT_FIND_MAX_PER_MINUTE)",
+    help="Cap outbound requests per minute. The budget persists across runs, so a "
+         "second run soon after the first waits for what the first spent.",
+)
+def cli(max_per_minute: int):
     """reddit-find - fetch Reddit data for GTM research.
 
     Discovers relevant subreddits and fetches top threads + comments as
     structured markdown. No API key required. Claude in session handles analysis.
     """
-    pass
+    init_limiter(max_per_minute)
 
 
 @cli.command()
@@ -133,7 +145,11 @@ def fetch(
         all_threads.extend(posts)
 
     if not all_threads:
-        click.echo("No threads fetched. Check subreddit names or lower --min-score.", err=True)
+        click.echo(
+            "No threads matched. The backend answered fine, so this is a real zero.\n"
+            "Check the subreddit names are spelled right, or widen --max-age-days.",
+            err=True,
+        )
         sys.exit(1)
 
     # Step 3: Build structured markdown (no analysis — Claude handles that)
@@ -233,7 +249,15 @@ def search(
     )
 
     if not posts:
-        click.echo("No posts found. Try broader query, lower --min-score, or higher --max-age-days.", err=True)
+        click.echo(
+            "No posts matched. The backend answered fine, so this is a real zero "
+            "for this query.\n"
+            "Most likely the query, not the market: matching is an AND of every word, "
+            "so a sentence rarely hits.\n"
+            "Try 2-3 content words (\"cold email\", not \"cold email is dead\"), or a "
+            "different subreddit.",
+            err=True,
+        )
         sys.exit(1)
 
     click.echo(f"Found {len(posts)} posts.", err=True)
@@ -390,9 +414,51 @@ def _build_post_markdown(post: dict) -> str:
     return "\n".join(lines)
 
 
+def _print_budget() -> None:
+    """Report what this run spent against the persisted request budget."""
+    lim = current_limiter()
+    if lim is None or lim.requests_this_run == 0:
+        return
+    msg = f"{lim.requests_this_run} requests this run (cap {lim.max_per_minute}/min"
+    if lim.waited_this_run:
+        msg += f", paced {lim.waited_this_run}"
+    msg += ")"
+    click.echo(msg, err=True)
+
+
 def main():
+    """Entry point.
+
+    Exit codes are the contract that keeps a broken backend from being read as
+    market evidence:
+
+      0  success, results returned
+      1  the query genuinely matched nothing (the backend answered fine)
+      2  the backend FAILED — blocked, rate limited, or unreachable.
+         NOT a statement about the market. Do not conclude anything from it.
+    """
     try:
-        cli()
-    except (RedditAuthError, RedditBlockedError) as e:
-        click.echo(f"\n⚠  {e}", err=True)
+        cli(standalone_mode=False)
+        _print_budget()
+    except click.exceptions.Abort:
+        sys.exit(130)
+    except click.ClickException as e:
+        e.show()
+        sys.exit(e.exit_code)
+    except SystemExit as e:
+        _print_budget()
+        raise
+    except (RedditRateLimitError, RedditBlockedError, BackendUnavailableError,
+            ArcticShiftError, RedditAuthError, LegacyRedditBlockedError) as e:
+        click.echo("", err=True)
+        click.echo("=" * 68, err=True)
+        click.echo("BACKEND FAILURE - this is NOT 'no results'.", err=True)
+        click.echo("=" * 68, err=True)
+        click.echo(f"{e}", err=True)
+        click.echo("", err=True)
+        click.echo("The mirror did not answer, so this run says NOTHING about whether", err=True)
+        click.echo("people are discussing this topic. Do not treat it as a quiet market.", err=True)
+        click.echo("Retry in a few minutes, or check: "
+                   "curl -s 'https://arctic-shift.photon-reddit.com/api/subreddits/search"
+                   "?subreddit=sales&limit=1'", err=True)
         sys.exit(2)
