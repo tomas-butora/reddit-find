@@ -7,13 +7,11 @@ from pathlib import Path
 from typing import List, Optional
 
 import click
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
-# Load credentials (REDDIT_CLIENT_ID/SECRET, SERPER_API_KEY) from .env.
-# Try the gtm-context-os repo root first, then any local .env / cwd.
-load_dotenv(Path(__file__).parents[4] / ".env", override=False)  # gtm-context-os/.env
-load_dotenv(Path(__file__).parents[2] / ".env", override=False)  # tools/.env (legacy)
-load_dotenv(override=False)
+# Optional credentials (SERPER_API_KEY, REDDIT_CLIENT_ID/SECRET) from the nearest
+# .env above the directory you run the command in.
+load_dotenv(find_dotenv(usecwd=True), override=False)
 
 from . import __version__
 from .arctic import ArcticShiftError
