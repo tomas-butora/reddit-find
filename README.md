@@ -17,11 +17,18 @@ Reddit is where buyers vent unfiltered. No corporate polish, no LinkedIn posturi
 
 ## Install
 
+Requires Python 3.9+.
+
 ```bash
-pip install reddit-find
+pip install git+https://github.com/tomas-butora/reddit-find.git
 ```
 
+> Do not run plain `pip install reddit-find`. That installs the original PyPI release, which still
+> calls Reddit's own API and no longer works. This fork reads from the free Arctic Shift mirror.
+
 No required API keys. Zero per-query cost.
+
+**Every `search` needs `-s <subreddit>`.** There is no all-of-Reddit search on this backend. Run `discover` first if you don't know the subs.
 
 **Optional** (improves subreddit discovery):
 ```bash
@@ -120,7 +127,7 @@ New market? New vertical? Reddit tells you what the actual problems are before y
 
 ```bash
 reddit-find fetch "HR software frustration" -s humanresources -s hrtechnology \
-  --min-score 30 --max-age-days 365 -o hr-pain.md
+  --max-age-days 365 -o hr-pain.md
 ```
 
 Your AI extracts: specific pain points ranked by engagement, the job titles posting, what solutions they've tried and rejected, and what "good enough" looks like to them.
@@ -162,7 +169,7 @@ Stop writing copy that sounds like a marketer. Start writing copy that sounds li
 
 ```bash
 reddit-find fetch "CRM is a nightmare" -s sales -s salesforce -s hubspot \
-  --min-score 50 -o voice.md
+  -o voice.md
 ```
 
 Extract verbatim phrases, metaphors, and complaints. Use them directly in landing pages, ads, and sales decks. When a prospect reads your copy and thinks "this person gets it" - that's the power of real VOC data.
@@ -203,15 +210,15 @@ Skip discovery for common GTM research. Copy-paste the right subs for your topic
 
 ### `reddit-find search [OPTIONS] QUERY`
 
-Search Reddit by keyword. Hits Reddit's search index — finds posts across history by relevance, not just current hot/top. Defaults tuned for EDP mining.
+Search Reddit by keyword. Pulls the most recent ~1,500 posts per subreddit and matches locally. Every word in the query must appear (AND match, not phrase), so use 2-3 content words, not a sentence.
 
 ```
   QUERY                    Keyword or phrase to search for
-  -s, --subreddit TEXT     Scope to subreddit (repeatable). Omit for global.
+  -s, --subreddit TEXT     Subreddit to search (repeatable). REQUIRED.
   --titles-only            Skip comments - titles, scores, dates, URLs only
   --max-age-days INT       Filter posts older than N days (default: 1825 / 5yr)
-  --min-score INT          Min upvote score (default: 1)
-  --limit INT              Posts per subreddit or total global (default: 50)
+  --min-score INT          Min upvote score (default: 1, off)
+  --limit INT              Posts per subreddit (default: 50)
   --sort TEXT              relevance | top | new | comments (default: relevance)
   -o, --output TEXT        Save output to file (default: stdout)
 ```
@@ -225,7 +232,7 @@ Fetch hot + top threads from subreddits. Auto-discovers subs or targets specific
   -s, --subreddit TEXT     Target subreddit (repeatable, skips discovery)
   --titles-only            Skip comments - titles, scores, dates, URLs only
   --max-age-days INT       Filter posts older than N days (default: 365)
-  --min-score INT          Min upvote score (default: 5)
+  --min-score INT          Min upvote score (default: 1, off)
   --top-threads INT        Top threads per sub (default: 8)
   --posts-per-sub INT      Posts to fetch per sub (default: 20)
   --serper-key TEXT        SerperDev API key (env: SERPER_API_KEY)
@@ -291,15 +298,15 @@ Posts: 24
 Add reddit-find as a Claude Code skill (one-liner install):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LeadGrowGTM/reddit-find/main/install-skill.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tomas-butora/reddit-find/master/install-skill.sh | bash
 ```
 
 This installs the skill into your `.claude/skills/` directory. Claude Code will automatically use the two-pass workflow, recency filtering, and GTM subreddit clusters when you ask it to research topics on Reddit.
 
 ## How It Works
 
-1. **Find** - `search` hits Reddit's search index to find posts by keyword across history. `fetch` pulls current hot + top posts from subreddits. `discover` finds the right subreddits when you don't know where to look.
-2. **Filter** - Recency filtering (`--max-age-days`), score thresholds (`--min-score`), and thread limits keep output focused.
+1. **Find** - `search` matches keywords against recent posts in the subreddits you name. `fetch` pulls current hot + top posts from subreddits. `discover` finds the right subreddits when you don't know where to look.
+2. **Filter** - Recency filtering (`--max-age-days`) and thread limits keep output focused. Results rank on comment count, not score: the mirror leaves most posts at score 1, so `--min-score` is off by default and only useful when you want confirmed-popular threads.
 3. **Eval** - `--titles-only` gives you a fast table of post titles, scores, comment counts, and URLs. Scan it, pick the winners.
 4. **Deep dive** - `post` fetches the full thread: post body + up to 50 comments ranked by upvotes. That's where the real EDP language is.
 5. **Output** - Structured markdown ready for any AI. Claude, ChatGPT, Gemini, local models — all work.
@@ -316,8 +323,8 @@ Always filter by recency. Stale pain points produce stale copy.
 
 ## Cost
 
-Zero. Reddit JSON API is free and requires no authentication. SerperDev is optional and has a free tier (2,500 searches/month).
+Zero. The Arctic Shift mirror is free and requires no authentication. SerperDev is optional and has a free tier (2,500 searches/month).
 
 ## License
 
-MIT - built by [LeadGrow](https://leadgrow.ai)
+MIT - originally built by [LeadGrow](https://leadgrow.ai). This fork swaps the backend to Arctic Shift and ranks on comment count.
